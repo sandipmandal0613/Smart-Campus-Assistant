@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Smart Campus AI Assistant (Fixed)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Fuse.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js/dist/fuse.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+      background: linear-gradient(135deg, #1f1c2c, #928dab);
+      color: #fff;
+      display: flex; justify-content: center; align-items: center;
+      height: 100vh;
+    }
+    .container {
+      width: 95%; max-width: 820px;
+      background: rgba(255,255,255,0.12);
+      backdrop-filter: blur(16px);
+      border-radius: 24px;
+      padding: 20px;
+      display: flex; flex-direction: column;
+      height: 92vh;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+    h1 { margin: 0 0 14px; text-align: center; font-size: 26px; font-weight: 700; letter-spacing: 0.5px; }
+    #chat { flex: 1; overflow-y: auto; padding: 16px; border-radius: 16px; background: rgba(0,0,0,0.15); }
+    .msg { display: flex; gap: 12px; margin: 14px 0; animation: fadeIn 0.5s ease; align-items: flex-end; }
+    .avatar { width: 42px; height: 42px; border-radius: 50%; display:flex;align-items:center;justify-content:center; font-weight:600; font-size:16px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+    .user .avatar { background:#22d3ee; color:#000; }
+    .bot .avatar { background:#6366f1; color:#fff; }
+    .bubble { padding: 12px 16px; border-radius: 16px; max-width: 70%; line-height: 1.5; font-size: 15px; box-shadow: 0 2px 6px rgba(0,0,0,0.25); animation: slideUp 0.3s ease; }
+    .user .bubble { background: linear-gradient(135deg, #22d3ee, #0ea5e9); color:#000; margin-left:auto; border-bottom-right-radius: 4px; }
+    .bot .bubble { background: rgba(255,255,255,0.9); color:#111; border-bottom-left-radius: 4px; }
+    #inputRow { display:flex; gap:10px; margin-top:12px; background: rgba(255,255,255,0.15); border-radius: 16px; padding: 8px; align-items:center; }
+    #message { flex:1; padding: 12px; border-radius: 12px; border:none; font-size:15px; outline:none; background:transparent; color:#fff; }
+    #message::placeholder { color:#ccc; }
+    button { padding: 10px 14px; border-radius: 12px; border:none; cursor:pointer; background:#6366f1; color:#fff; font-weight:600; transition:0.2s; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+    button:hover { background:#4f46e5; }
+    .chipbox { margin-top:10px; display:flex; flex-wrap:wrap; gap:8px; }
+    .chip { background: rgba(255,255,255,0.2); padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 13px; transition: background 0.2s; }
+    .chip:hover { background: rgba(255,255,255,0.35); }
+    @keyframes fadeIn { from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:translateY(0);} }
+    @keyframes slideUp { from{transform:translateY(10px); opacity:0;} to{transform:translateY(0); opacity:1;} }
+    @keyframes blink { 50% { opacity: 0.3; } }
+    .typing span { animation: blink 1s infinite; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🤖 Smart Campus AI Assistant</h1>
+    <div id="chat"></div>
+    <div class="chipbox" id="examples"></div>
+    <div id="inputRow">
+      <input id="message" placeholder="Type or use mic to ask..." autocomplete="off" />
+      <button id="voiceBtn" title="Voice input">🎙</button>
+      <button id="send">Send</button>
+    </div>
+  </div>
+
+  <script>
+    // ---------------- Knowledge Base (now includes aliases for simpler matching) ----------------
+    const KB = [
+      {
+        topic: "library",
+        aliases: ["library", "library hours", "hours", "open", "opening"],
+        answer: "📚 The library is open Mon–Fri 8 AM – 10 PM, and Sat–Sun 10 AM – 6 PM."
+      },
+      {
+        topic: "cafeteria",
+        aliases: ["cafeteria", "dining", "lunch", "breakfast", "dinner"],
+        answer: "🍴 Cafeteria serves breakfast 7:30–9:30, lunch 12–2, dinner 6–8."
+      },
+      {
+        topic: "registrar",
+        aliases: ["registrar", "registration", "registrar office", "admin block", "registrar's office"],
+        answer: "📝 Registrar’s office: Admin Block A, Room 210. Email registrar@univ.edu. Open 9 AM–4 PM weekdays."
+      },
+      {
+        topic: "bus",
+        aliases: ["bus", "shuttle", "shuttle bus", "transport", "shuttle runs"],
+        answer: "🚌 Shuttle runs every 15 mins weekdays (7 AM–11 PM) and every 30 mins weekends (9 AM–8 PM)."
+      },
+      {
+        topic: "transcripts",
+        aliases: ["transcripts", "transcript", "records", "get transcripts"],
+        answer: "📄 Request transcripts via registrar portal. Normal processing 3–5 days, express available."
+      }
+    ];
+
+    // ---------------- Fuse.js search ----------------
+    // Use fairly permissive options; we'll also add a safe keyword fallback below.
+    const fuseOptions = {
+      keys: ["topic", "answer"],
+      includeScore: true,
+      threshold: 0.45,
+      ignoreLocation: true,
+      minMatchCharLength: 2
+    };
+    const fuse = new Fuse(KB, fuseOptions);
+
+    // ---------------- UI elements ----------------
+    const chat = document.getElementById("chat");
+    const input = document.getElementById("message");
+    const send = document.getElementById("send");
+    const voiceBtn = document.getElementById("voiceBtn");
+    const examples = document.getElementById("examples");
+
+    const demoQs = [
+      "What are the library hours?",
+      "When is lunch served?",
+      "Where is the registrar office?",
+      "How often does the shuttle run?",
+      "How can I get transcripts?"
+    ];
+    demoQs.forEach(q => {
+      const c = document.createElement("div");
+      c.className = "chip";
+      c.textContent = q;
+      c.onclick = () => { input.value = q; sendMessage(); };
+      examples.appendChild(c);
+    });
+
+    function addMsg(text, who = "bot", typing = false) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg " + who;
+      const avatar = document.createElement("div");
+      avatar.className = "avatar";
+      avatar.textContent = who === "user" ? "U" : "🤖";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.innerHTML = text;
+      wrap.appendChild(avatar);
+      wrap.appendChild(bubble);
+      chat.appendChild(wrap);
+      chat.scrollTop = chat.scrollHeight;
+      if (typing) bubble.classList.add("typing");
+      return bubble;
+    }
+
+    function speak(text) {
+      if ('speechSynthesis' in window) {
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.rate = 1; utter.pitch = 1; utter.lang = "en-US";
+        speechSynthesis.speak(utter);
+      }
+    }
+
+    // ---------------- Matching logic ----------------
+    // Try Fuse first, if not found then fallback to simple alias/keyword matching.
+    function findKBEntry(query) {
+      if (!query) return null;
+      const q = query.trim();
+      // 1) Fuse.js fuzzy search
+      try {
+        const results = fuse.search(q);
+        if (results && results.length) {
+          // If the top result has an item, return it.
+          if (results[0].item) return results[0].item;
+        }
+      } catch (e) {
+        // ignore fuzzy errors and fall back to keyword matching
+        console.warn("Fuse search error:", e);
+      }
+
+      // 2) simple keyword/alias matching (robust fallback)
+      const normalized = q.toLowerCase();
+      for (const item of KB) {
+        if (item.aliases && Array.isArray(item.aliases)) {
+          for (const a of item.aliases) {
+            // match using word boundary-ish check to avoid accidental substring hits
+            if (normalized.includes(a.toLowerCase())) return item;
+          }
+        }
+        // also check topic directly
+        if (normalized.includes(item.topic.toLowerCase())) return item;
+      }
+
+      // 3) small heuristic mappings (optional): check for common words
+      if (normalized.includes("hours") || normalized.includes("open")) {
+        return KB.find(i => i.topic === "library") || null;
+      }
+      if (normalized.includes("lunch") || normalized.includes("breakfast") || normalized.includes("dinner")) {
+        return KB.find(i => i.topic === "cafeteria") || null;
+      }
+      if (normalized.includes("transcript")) {
+        return KB.find(i => i.topic === "transcripts") || null;
+      }
+
+      return null;
+    }
+
+    // ---------------- Message sending ----------------
+    function sendMessage() {
+      const q = input.value.trim();
+      if (!q) return;
+      addMsg(escapeHtml(q), "user");
+      input.value = "";
+      const bubble = addMsg('<span>.</span><span>.</span><span>.</span>', "bot", true);
+
+      // simulate thinking / response
+      setTimeout(() => {
+        bubble.classList.remove("typing");
+        const entry = findKBEntry(q);
+        if (entry) {
+          const reply = entry.answer;
+          bubble.innerHTML = escapeHtml(reply);
+          speak(stripEmoji(reply));
+        } else {
+          const reply = "❓ I couldn’t find that info. Try asking about library, cafeteria, bus, registrar, or transcripts.";
+          bubble.innerHTML = escapeHtml(reply);
+          speak(stripEmoji(reply));
+        }
+        chat.scrollTop = chat.scrollHeight;
+      }, 700);
+    }
+
+    // small helpers
+    function escapeHtml(unsafe) {
+      // Prevent accidental HTML injection from user input (we still allow KB answers as text)
+      return String(unsafe)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+    function stripEmoji(text) {
+      // remove emoji for speechSynth when necessary
+      return String(text).replace(/[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}]/gu, '');
+    }
+
+    send.onclick = sendMessage;
+    input.addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+
+    // ---------------- Voice Input (cross-browser) ----------------
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    if (SpeechRecognition) {
+      const recog = new SpeechRecognition();
+      recog.continuous = false;
+      recog.lang = "en-US";
+      recog.interimResults = false;
+      recog.onresult = e => {
+        const t = e.results[0][0].transcript;
+        input.value = t;
+        sendMessage();
+      };
+      recog.onerror = (err) => {
+        console.warn("Speech recognition error", err);
+      };
+      let listening = false;
+      voiceBtn.onclick = () => {
+        try {
+          if (!listening) {
+            recog.start();
+            listening = true;
+            voiceBtn.textContent = "🔴";
+            voiceBtn.title = "Listening... click to stop";
+          } else {
+            recog.stop();
+            listening = false;
+            voiceBtn.textContent = "🎙";
+            voiceBtn.title = "Voice input";
+          }
+        } catch (e) {
+          console.warn("Speech start/stop error:", e);
+        }
+      };
+      // return to normal button state when recognition ends
+      recog.onend = () => { listening = false; voiceBtn.textContent = "🎙"; voiceBtn.title = "Voice input"; };
+    } else {
+      // hide mic if not supported
+      voiceBtn.style.display = "none";
+    }
+
+    // ---------------- Greeting ----------------
+    addMsg("👋 Hello! I’m your AI Campus Assistant. Ask me about schedules, dining, library, registrar, or transcripts.");
+
+  </script>
+</body>
+</html>
